@@ -24,11 +24,49 @@ app.get('/', (req, res) => {
 });
 
 // Route for POST requests
-app.post('/', (req, res) => {
-  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  console.log(`\n\nWebhook received ${timestamp}\n`);
-  console.log(JSON.stringify(req.body, null, 2));
-  res.status(200).end();
+// app.post('/', (req, res) => {
+//   const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+//   console.log(`\n\nWebhook received ${timestamp}\n`);
+//   console.log(JSON.stringify(req.body, null, 2));
+//   res.status(200).end();
+// });
+
+app.post('/', async (req, res) => {
+  console.log("Incoming webhook:", JSON.stringify(req.body, null, 2));
+
+  try {
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const message = changes?.value?.messages?.[0];
+
+    if (message) {
+      const from = message.from;
+      const text = message.text?.body;
+
+      console.log("User said:", text);
+
+      // 👇 SEND REPLY
+      await fetch(`https://graph.facebook.com/v23.0/${process.env.PHONE_NUMBER_ID}/messages`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: from,
+          text: {
+            body: `You said: ${text}`
+          }
+        })
+      });
+    }
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error(err);
+    res.sendStatus(500);
+  }
 });
 
 // Start the server
