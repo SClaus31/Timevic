@@ -1,6 +1,13 @@
 // Import Express.js
 const express = require('express');
 
+// Import OpenAI
+const OpenAI = require("openai");
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 // Create an Express app
 const app = express();
 
@@ -43,23 +50,41 @@ app.post('/', async (req, res) => {
       const from = message.from;
       const text = message.text?.body;
 
-      console.log("User said:", text);
+      // 🧠 Ask OpenAI
+      const aiResponse = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: "You are a helpful WhatsApp assistant. Keep replies short and natural."
+          },
+          {
+            role: "user",
+            content: text
+          }
+        ],
+      });
+
+      const reply = aiResponse.choices[0].message.content;
 
       // 👇 SEND REPLY
-      await fetch(`https://graph.facebook.com/v23.0/${process.env.PHONE_NUMBER_ID}/messages`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.ACCESS_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: from,
-          text: {
-            body: `You said: ${text}`
-          }
-        })
-      });
+      await fetch(
+        `https://graph.facebook.com/v23.0/${process.env.PHONE_NUMBER_ID}/messages`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.ACCESS_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to: from,
+            text: {
+              body: reply
+            }
+          })
+        }
+      );
     }
 
     res.sendStatus(200);
