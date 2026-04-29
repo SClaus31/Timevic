@@ -8,6 +8,9 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Create a conversations object to store the conversation history
+const conversations = {};
+
 // Create an Express app
 const app = express();
 
@@ -51,21 +54,38 @@ app.post('/', async (req, res) => {
       const text = message.text?.body;
 
       // 🧠 Ask OpenAI
-      const aiResponse = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
+      const userId = from;
+
+      // Initialize history if not exists
+      if (!conversations[userId]) {
+        conversations[userId] = [
           {
             role: "system",
             content: "You are a helpful WhatsApp assistant. Keep replies short and natural."
-          },
-          {
-            role: "user",
-            content: text
           }
-        ],
+        ];
+      }
+
+      // Add user message
+      conversations[userId].push({
+        role: "user",
+        content: text
       });
 
+      // Call OpenAI with history
+      const aiResponse = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: conversations[userId],
+      });
+
+      // Get reply
       const reply = aiResponse.choices[0].message.content;
+
+      // Save assistant reply
+      conversations[userId].push({
+        role: "assistant",
+        content: reply
+      });
 
       // 👇 SEND REPLY
       await fetch(
