@@ -11,9 +11,6 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Create a conversations object to store the conversation history
-const conversations = {};
-
 // Create an Express app
 const app = express();
 
@@ -27,105 +24,37 @@ const verifyToken = process.env.VERIFY_TOKEN;
 const systemPrompt = `
 You are a planning assistant.
 
+You maintain and update a task JSON through conversation.
+
+You will receive:
+- User input
+- Current task JSON (or null)
+
 Your job:
-1. Classify the user input into one of:
-   - event
-   - task
-   - block
-   - habit
+1. Update the task JSON
+2. Decide if the task is complete
 
-2. Extract into JSON with this schema:
+Response format:
 
+If incomplete:
 {
-  "type": "event | task | block | habit",
-  "title": "string",
-  "duration_minutes": number | null,
-  "deadline": string | null,
-  "start_time": string | null,
-  "recurrence": string | null,
-  "total_duration_minutes": number | null
+  "task": { ... },
+  "complete": false,
+  "question": "your follow-up question"
 }
 
-3. Always return JSON ONLY.
+If complete:
+{
+  "task": { ... },
+  "complete": true
+}
 
-4. If information is missing, still return JSON with null values.
-
-Do not ask questions.
-Do not explain anything.
+Rules:
+- Be smart and infer when possible
+- Ask only ONE short, natural question if needed
+- Never explain
+- Always return valid JSON only
 `;
-
-
-function getMissingField(task) {
-  switch (task.type) {
-    case "event":
-      if (!task.start_time) return "start_time";
-      if (!task.duration_minutes) return "duration_minutes";
-      break;
-
-    case "task":
-      if (!task.duration_minutes) return "duration_minutes";
-      break;
-
-    case "block":
-      if (!task.total_duration_minutes) return "total_duration_minutes";
-      if (!task.deadline) return "deadline";
-      break;
-
-    case "habit":
-      if (!task.recurrence) return "recurrence";
-      if (!task.duration_minutes) return "duration_minutes";
-      break;
-  }
-  return null;
-}
-
-function fillMissingField(task, field, userInput) {
-  switch (field) {
-    case "duration_minutes":
-      task.duration_minutes = extractNumber(userInput);
-      break;
-
-    case "total_duration_minutes":
-      task.total_duration_minutes = extractNumber(userInput);
-      break;
-
-    case "deadline":
-      task.deadline = userInput; // improve later with date parsing
-      break;
-
-    case "start_time":
-      task.start_time = userInput;
-      break;
-
-    case "recurrence":
-      task.recurrence = userInput;
-      break;
-  }
-
-  return task;
-}
-
-function extractNumber(text) {
-  const match = text.match(/\d+/);
-  return match ? parseInt(match[0]) : null;
-}
-
-function getFollowUpQuestion(field) {
-  switch (field) {
-    case "duration_minutes":
-      return "How long will this take?";
-    case "start_time":
-      return "When should this happen?";
-    case "deadline":
-      return "When is the deadline?";
-    case "total_duration_minutes":
-      return "How many hours will this take in total?";
-    case "recurrence":
-      return "How often should this happen?";
-    default:
-      return null;
-  }
-}
 
 // Route for GET requests
 app.get('/', (req, res) => {
@@ -139,90 +68,62 @@ app.get('/', (req, res) => {
   }
 });
 
-// Route for POST requests
-// app.post('/', (req, res) => {
-//   const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-//   console.log(`\n\nWebhook received ${timestamp}\n`);
-//   console.log(JSON.stringify(req.body, null, 2));
-//   res.status(200).end();
-// });
+
 
 app.post('/', async (req, res) => {
   console.log("Incoming webhook:", JSON.stringify(req.body, null, 2));
 
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
-
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!message) return res.sendStatus(200);
 
     const from = message.from;
     const userInput = message.text?.body;
 
-    // 🔁 FOLLOW-UP FLOW
-    if (pendingTasks[from]) {
-      let { task, missingField } = pendingTasks[from];
+    if (!userInput) return res.sendStatus(200);
 
-      task = fillMissingField(task, missingField, userInput);
+    const currentTask = pendingTasks[from]?.task || null;
 
-      const nextMissing = getMissingField(task);
+const aiResponse = await openai.responses.create({
+  model: "gpt-4.1",
+  input: [
+    { role: "system", content: systemPrompt },
+    {
+      role: "user",
+      content: `
+User input: ${userInput}
 
-      if (nextMissing) {
-        pendingTasks[from] = { task, missingField: nextMissing };
-
-        const question = getFollowUpQuestion(nextMissing);
-        await sendWhatsAppMessage(from, question);
-
-        return res.sendStatus(200);
-      }
-
-      // ✅ COMPLETE
-      delete pendingTasks[from];
-
-      await sendWhatsAppMessage(
-        from,
-        `Got it ✅\n\n${JSON.stringify(task, null, 2)}`
-      );
-
-      return res.sendStatus(200);
+Current task JSON:
+${JSON.stringify(currentTask)}
+`
     }
+  ]
+});
 
-    // 🧠 NEW TASK → OpenAI
-    const aiResponse = await openai.responses.create({
-      model: "gpt-4.1",
-      input: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userInput }
-      ]
-    });
+const aiText = aiResponse.output[0].content[0].text;
 
-    const aiText = aiResponse.output[0].content[0].text;
+let result;
+try {
+  result = JSON.parse(aiText);
+} catch (e) {
+  await sendWhatsAppMessage(from, "Sorry, I didn't understand that.");
+  return res.sendStatus(200);
+}
 
-    let task;
-    try {
-      task = JSON.parse(aiText);
-    } catch (e) {
-      await sendWhatsAppMessage(from, "Sorry, I didn't understand that.");
-      return res.sendStatus(200);
-    }
+if (!result.complete) {
+  pendingTasks[from] = { task: result.task };
 
-    const missingField = getMissingField(task);
+  await sendWhatsAppMessage(from, result.question);
+  return res.sendStatus(200);
+}
 
-    if (missingField) {
-      pendingTasks[from] = { task, missingField };
+// ✅ COMPLETE
+delete pendingTasks[from];
 
-      const question = getFollowUpQuestion(missingField);
-      await sendWhatsAppMessage(from, question);
-
-      return res.sendStatus(200);
-    }
-
-    // ✅ COMPLETE
-    await sendWhatsAppMessage(
-      from,
-      `Got it ✅\n\n${JSON.stringify(task, null, 2)}`
-    );
+await sendWhatsAppMessage(
+  from,
+  `Got it ✅\n\n${JSON.stringify(result.task, null, 2)}`
+);
 
     return res.sendStatus(200);
 
@@ -254,3 +155,4 @@ async function sendWhatsAppMessage(to, body) {
 app.listen(port, () => {
   console.log(`\nListening on port ${port}\n`);
 });
+
